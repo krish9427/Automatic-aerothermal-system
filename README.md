@@ -1,38 +1,106 @@
-# Automatic Aerothermal Fan Controller
+# 🔥 Automatic Aerothermal System using ESP32
 
-This project is an advanced cooling system powered by an **ESP32**. It monitors real-time temperature using a DS18B20 sensor and automatically adjusts a 4-wire PWM fan's speed based on thermal thresholds.
+An embedded systems project that automatically controls airflow (fan speed) based on temperature, providing efficient thermal management using an ESP32 microcontroller.
 
-## 🚀 Features
-* [cite_start]**Automated Thermal Control:** Fan speed scales dynamically with temperature[cite: 27, 31].
-* [cite_start]**IoT Integration:** Live monitoring and manual override via the **Blynk App**[cite: 14, 15, 44].
-* [cite_start]**OLED Dashboard:** Real-time display of RPM, Temperature, PWM Duty Cycle, and WiFi status[cite: 50, 53, 55].
-* [cite_start]**RPM Feedback:** Uses the fan's tachometer signal for precise speed measurement[cite: 10, 78].
+---
 
-## 🛠️ Hardware Requirements
-* ESP32 Development Board
-* 4-Wire PWM Fan (12V)
-* DS18B20 Temperature Sensor
-* [cite_start]SSD1306 OLED Display (I2C) [cite: 6]
-* Logic Level Converter (3.3V to 5V)
-* MT3608 Boost Converter (if powering from Li-ion)
+## 📌 Project Overview
 
-## 📌 Wiring Diagram
-![Wiring Diagram](./images/wiring_diagram.jpg)
+The Automatic Aerothermal System monitors temperature using a DS18B20 digital temperature sensor and dynamically adjusts the fan speed using PWM control. The system also measures fan RPM using a tachometer signal and displays real-time data on an OLED display.
 
-## 💻 Software Setup
-1. Install the following libraries in Arduino IDE:
-   - `Blynk`
-   - `DallasTemperature`
-   - `Adafruit_SSD1306`
-2. [cite_start]Update the `wifi_ssid` and `wifi_password` in the code[cite: 2].
-3. [cite_start]Input your `BLYNK_AUTH_TOKEN`.
-4. Upload `src/perfected_areothermal.ino` to your ESP32.
+This project demonstrates concepts of:
+- Embedded C/C++
+- Sensors & Actuators
+- PWM Control
+- Interrupts
+- I2C Communication
+- Real-time monitoring
 
-## 📊 Pin Mapping
-| Component | ESP32 Pin |
-|-----------|-----------|
-| Temp Sensor | [cite_start]GPIO 23 [cite: 3] |
-| PWM Fan | [cite_start]GPIO 4 [cite: 3] |
-| Tachometer | [cite_start]GPIO 5 [cite: 4] |
-| OLED SDA | [cite_start]GPIO 21 [cite: 5] |
-| OLED SCL | [cite_start]GPIO 22 [cite: 6] |
+---
+
+## ⚙️ Features
+
+- 🌡️ Accurate temperature sensing using DS18B20
+- 🌀 Automatic fan speed control using PWM
+- 📈 Fan RPM measurement using tachometer feedback
+- 🖥️ OLED display for real-time data
+- 🔋 Efficient power management
+- 🧠 Interrupt-based RPM calculation
+
+---
+
+## 🧰 Hardware Components
+
+| Component | Description |
+|---------|------------|
+| ESP32 | Main controller |
+| DS18B20 | Digital temperature sensor |
+| OLED SSD1306 | 128x64 I2C display |
+| DC Fan | With PWM and tachometer |
+| Level Shifter | 3.3V ↔ 5V logic |
+| MT3608 | Boost converter |
+| Li-ion Battery | 3.7V power source |
+
+---
+
+## 🔌 Pin Configuration
+
+| Function | ESP32 GPIO |
+|--------|-----------|
+| DS18B20 Data | GPIO 23 |
+| Fan PWM | GPIO 4 |
+| Fan Tachometer | GPIO 5 |
+| OLED SDA | GPIO 21 |
+| OLED SCL | GPIO 22 |
+
+---
+
+## 🧠 Working Principle
+
+1. The DS18B20 continuously measures temperature.
+2. ESP32 reads temperature data using OneWire protocol.
+3. Based on temperature range, PWM duty cycle is adjusted.
+4. Fan speed increases or decreases automatically.
+5. Tachometer pulses are counted using interrupts.
+6. RPM is calculated and displayed on OLED.
+7. System runs in real-time with efficient control.
+
+---
+
+## 🖼️ Hardware Setup
+
+![Circuit Diagram](hardware/images/circuit.png)
+![Breadboard Setup](hardware/images/breadboard.jpg)
+
+---
+
+## 🚀 Applications
+
+- Electronics cooling systems
+- Smart ventilation
+- Thermal management in embedded systems
+- IoT-based cooling solutions
+
+---
+
+## 🔮 Future Improvements
+
+- Wi-Fi / Blynk cloud monitoring
+- Mobile app dashboard
+- Data logging to SD card
+- PID-based fan control
+- Enclosure and PCB design
+
+---
+
+## 👨‍💻 Author
+
+**Krish Oza**  
+Electronics & Communication Engineering  
+ESP32 | Embedded Systems | IoT  
+
+---
+
+## 📜 License
+
+This project is licensed under the MIT License.
