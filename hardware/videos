@@ -1,10 +1,2 @@
-## 🎥 Project Demonstration Video
-
-▶️ **Watch the full working demo here:**  
-https://drive.google.com/file/d/1NtlIiiwY6rSn-aNDdwtQHCXyILQnOc03/view?usp=drive_link
-
-This video demonstrates:
-- Real-time temperature sensing using DS18B20
-- Automatic fan speed control based on temperature
-- Fan RPM variation
-- OLED display output
+## 🎥 Demo Video
+[Click to watch demo](hardware/videos/demo.mp4)
