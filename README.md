@@ -324,12 +324,3 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 - **Adafruit Libraries** - OLED display support
 - **ESP32 Community** - Hardware and software resources
 
----
-
-<div align="center">
-
-**If you found this project useful, please give it a ⭐!**
-
-[![Star History Chart](https://api.star-history.com/svg?repos=krish9427/Automatic-aerothermal-system&type=Date)](https://star-history.com/#krish9427/Automatic-aerothermal-system&Date)
-
-</div>
