@@ -119,7 +119,7 @@ Install these libraries via Arduino Library Manager:
 ## 🖼️ Hardware Setup
 
 ### Circuit Diagram
-![Circuit Diagram](hardware/images/circuit.png)
+![Circuit Diagram](![Circuit Diagram](hardware/automatic%20aerothermal%20system.png)
 
 ### Breadboard Setup
 ![Breadboard](hardware/images/breadboard.jpg)
