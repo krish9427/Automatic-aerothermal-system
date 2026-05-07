@@ -1,411 +1,576 @@
-// Automatic Aerothermal System - ESP32
-// === ESP32 Fan Controller v1.8 - RPM DISPLAY FIX ===
-
-#define BLYNK_TEMPLATE_ID "TMPL3GUIT4B7w"
-#define BLYNK_TEMPLATE_NAME "Aerothermal"
-#define BLYNK_AUTH_TOKEN "Xw0Ez9yw-4D_IFHzxqTy7ZKqivl1XxPM"
+// === ESP32 Fan Controller v3.5 + Backend Relay Control ===
+// FIXES v3.5:
+//   - RPM now calculated proportionally from PWM (not raw tach pulse count)
+//   - Tach pulses still counted and printed for debug only
+//   - RPM correctly decreases as slider decreases
+//   - RPM = 0 when Relay OFF or PWM = 0
+//   - Configurable FAN_RPM_MIN / FAN_RPM_MAX at top of file
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <BlynkSimpleEsp32.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Fonts/FreeSans12pt7b.h>
+#include <DHT.h>
 
-// ---------------------- USER CONFIG ----------------------
-const char* wifi_ssid = "Airtel_9925222069_5G";  // ADD YOUR SSID
-const char* wifi_password = "vansh0918";   // ADD YOUR PASSWORD
-// ---------------------------------------------------------
+// ---------------- WIFI ----------------
+const char* wifi_ssid     = "Airtel_Krish1911";
+const char* wifi_password = "Jesse@996";
 
-// Hardware pins
-const int TEMP_SENSOR_PIN = 23;
-const int PWM_FAN_PIN     = 4;
-const int TACH_PIN        = 5;
-const int OLED_SDA        = 21;
-const int OLED_SCL        = 22;
+// ---------------- DEVICE ----------------
+const char* deviceName     = "Esp32_Aerothermal";
+const char* devicePass_Key = "Manav_123";
 
-// OLED settings
-const int OLED_WIDTH   = 128;
-const int OLED_HEIGHT  = 64;
-const uint8_t OLED_ADDRESS = 0x3C;
+// ---------------- BACKEND ----------------
+const char* SENSOR_POST_URL  = "https://aerothermal-fanbackend.vercel.app/api/dashboard/sensor";
+const char* PWM_STATUS_URL   = "https://aerothermal-fanbackend.vercel.app/api/dashboard/pwm-status/Manav_123";
+const char* RELAY_STATUS_URL = "https://aerothermal-fanbackend.vercel.app/api/dashboard/relay-status/Manav_123";
 
-// PWM settings
-const int LEDC_CHANNEL  = 0;
-const int FAN_PWM_FREQ  = 25000;
-const int FAN_PWM_BITS  = 8;
-const int PWM_MIN       = 80;
-const int PWM_MAX       = 255;
+// ---------------- PINS ----------------
+#define DS_PIN       23
+#define DHT_PIN      19
+#define DHTTYPE      DHT11
+#define PWM_FAN_PIN  4
+#define TACH_PIN     5
+#define BUZZER_PIN   18
+#define BAT_PIN      34
+#define OLED_SDA     21
+#define OLED_SCL     22
+#define RELAY_PIN    26
 
-// RPM sampling
-const unsigned long RPM_SAMPLE_MS = 1000;
+// ---------------- OLED ----------------
+#define SCREEN_WIDTH  128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// *** NEW: pulses per revolution for your fan ***
-const uint8_t PULSES_PER_REV = 2;   // try 2 first; if wrong, test 1 or 4
+// ---------------- FAN PWM ----------------
+#define LEDC_CHANNEL  0
+#define FAN_PWM_FREQ  25000
+#define FAN_PWM_BITS  8
+#define PWM_MIN       80
+#define PWM_MAX       255
 
-// Temperature thresholds
-const float TEMP_COOL   = 25.0f;
-const float TEMP_NORMAL = 35.0f;
-const float TEMP_HOT    = 50.0f;
-const float TEMP_ERROR  = -127.0f;
+// ---------------- FAN RPM RANGE ----------------
+// These define RPM at min and max PWM for proportional calculation
+// Tune FAN_RPM_MIN if fan spins slower at PWM=80
+#define FAN_RPM_MIN   1000UL    // RPM at PWM = 80  (adjust if needed)
+#define FAN_RPM_MAX   8000UL    // RPM at PWM = 255 (your fan's max)
 
-// Blynk virtual pins
-const int VPIN_TEMP        = V0;
-const int VPIN_RPM         = V1;
-const int VPIN_PWM_SLIDER  = V2;
-const int VPIN_PWM_DISPLAY = V3;
-const int VPIN_AUTO_MODE   = V4;
-const int VPIN_FAN_STATUS  = V5;
+// ---------------- TEMP → PWM MAPPING ----------------
+#define TEMP_COOL  25.0f
+#define TEMP_HOT   50.0f
 
-// Objects
-OneWire oneWire(TEMP_SENSOR_PIN);
-DallasTemperature tempSensor(&oneWire);
-Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+// ---------------- TEMP STATES ----------------
+#define TEMP_NORMAL_MAX  40.0f
+#define TEMP_RISING_MAX  50.0f
 
-// Volatile counters
+// ---------------- BUZZER ----------------
+const uint32_t BUZZ_BOOT_ON_MS  = 1000;
+const uint32_t BUZZ_OVER_ON_MS  = 5000;
+const uint32_t BUZZ_OVER_OFF_MS = 2000;
+
+// ---------------- BATTERY ----------------
+const float    DIVIDER_RATIO   = 2.0f;
+const float    VBAT_EMPTY      = 3.0f;
+const float    VBAT_FULL       = 4.2f;
+const uint32_t BAT_INTERVAL_MS = 1000;
+
+// ---------------- RPM (TACH - for debug only) ----------------
+const unsigned long RPM_SAMPLE_MS  = 1000;
 volatile unsigned long tachPulseCount = 0;
-volatile unsigned long totalPulses    = 0;
+volatile unsigned long lastTachMicros = 0;
 
-// System state
-float currentTemperature = 25.0f;
+// ---------------- OBJECTS ----------------
+OneWire           oneWire(DS_PIN);
+DallasTemperature ds18b20(&oneWire);
+DHT               dht(DHT_PIN, DHTTYPE);
+
+// ---------------- STATE ----------------
 unsigned long currentRPM = 0;
-int currentPWM           = PWM_MIN;
-bool autoMode            = true;
+int  currentPWM  = PWM_MIN;
+int  backendPWM  = 150;
+bool autoMode    = false;
 
-// Diagnostics flags
-bool oledWorking      = false;
-bool tempSensorWorking= false;
-bool fanControlWorking= false;
-bool wifiConnected    = false;
-bool tachConnected    = false;
+float ds_temp  = NAN, dht_temp = NAN, dht_hum = NAN;
+bool  ds_ok = false, dht_ok = false;
 
-// Timing
+float final_temp = NAN;
+bool  final_ok   = false;
+
+float heat_index_c = NAN;
+bool  hi_ok        = false;
+
+const char* tempState = "NORMAL";
+
+float vbat_ema = NAN;
+int   bat_pct  = -1;
+
+// ---------------- RELAY STATE ----------------
+bool relayState = false;
+
+// ---------------- TICKER ----------------
+int16_t tickerX = 128;
+const int16_t tickerY = 63;
+String tickerText = "";
+
+// ---------------- TIMERS ----------------
+unsigned long lastTempApply   = 0;
 unsigned long lastRpmCalc     = 0;
-unsigned long lastTempRead    = 0;
-unsigned long lastBlynkUpdate = 0;
+unsigned long lastPWMFetch    = 0;
+unsigned long lastRelayFetch  = 0;
+unsigned long lastSensorPost  = 0;
 unsigned long lastOLEDUpdate  = 0;
+unsigned long lastDHTRead     = 0;
+unsigned long lastBatRead     = 0;
 
-// ---------------------- ISR ----------------------
+uint32_t ds_req_time = 0, ds_conv_ms = 0;
+bool     ds_waiting  = false;
+
+bool     buzzerOn       = false;
+bool     bootBeepDone   = false;
+bool     overheatActive = false;
+uint32_t buzzerPhaseStart = 0;
+
+float r2(float x) { return roundf(x * 100.0f) / 100.0f; }
+
+// ---------------- ISR (debug only) ----------------
 void IRAM_ATTR tachISR() {
-  static unsigned long lastMicros = 0;
   unsigned long now = micros();
-  if (now - lastMicros > 200) {        // ~200 us debounce
+  if (now - lastTachMicros > 500) {
     tachPulseCount++;
-    totalPulses++;
-    tachConnected = true;
-    lastMicros = now;
+    lastTachMicros = now;
   }
 }
 
-// ---------------------- Utility ----------------------
-int tempToPWM(float temp) {
-  if (temp <= TEMP_ERROR) return PWM_MIN;
-  if (temp <= TEMP_COOL)  return PWM_MIN;
+// ---------------- HELPERS ----------------
+static inline int  clampi(int x, int lo, int hi) { return x < lo ? lo : x > hi ? hi : x; }
+static inline bool dsValid(float t)               { return (!isnan(t) && t != -127.0f && t > -55.0f && t < 125.0f); }
+static inline bool dhtValid(float t, float h)     { return (!isnan(t) && !isnan(h)); }
 
-  if (temp <= TEMP_NORMAL) {
-    float ratio = (temp - TEMP_COOL) / (TEMP_NORMAL - TEMP_COOL);
-    return PWM_MIN + (int)(ratio * (PWM_MAX - PWM_MIN) * 0.6f);
-  }
-
-  if (temp <= TEMP_HOT) {
-    float ratio = (temp - TEMP_NORMAL) / (TEMP_HOT - TEMP_NORMAL);
-    return PWM_MIN
-         + (int)(0.6f * (PWM_MAX - PWM_MIN))
-         + (int)(ratio * (PWM_MAX - PWM_MIN) * 0.4f);
-  }
-
-  return PWM_MAX;
+// ---------------- PWM → RPM (Proportional) ----------------
+// ✅ CORE FIX: RPM is linearly mapped from PWM
+// This ensures RPM always reflects the slider correctly
+unsigned long pwmToRPM(int pwm) {
+  if (pwm <= 0 || !relayState) return 0;
+  if (pwm <= PWM_MIN) return FAN_RPM_MIN;
+  if (pwm >= PWM_MAX) return FAN_RPM_MAX;
+  // Linear interpolation between PWM_MIN→FAN_RPM_MIN and PWM_MAX→FAN_RPM_MAX
+  return map((long)pwm, PWM_MIN, PWM_MAX, FAN_RPM_MIN, FAN_RPM_MAX);
 }
 
-// ---------------------- Initialization ----------------------
-bool initOLED() {
-  Wire.begin(OLED_SDA, OLED_SCL);
-  if (display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-    oledWorking = true;
-    Serial.println("OLED initialized at 0x3C");
-    return true;
-  }
-  if (display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
-    oledWorking = true;
-    Serial.println("OLED initialized at 0x3D");
-    return true;
-  }
-  oledWorking = false;
-  Serial.println("ERROR: OLED initialization failed!");
-  return false;
+// ---------------- PWM (Temp-based) ----------------
+int tempToPWM(float t) {
+  if (t <= TEMP_COOL) return PWM_MIN;
+  if (t >= TEMP_HOT)  return PWM_MAX;
+  float ratio = (t - TEMP_COOL) / (TEMP_HOT - TEMP_COOL);
+  return PWM_MIN + (int)(ratio * (PWM_MAX - PWM_MIN));
 }
 
-bool initTemp() {
-  Serial.println("Initializing DS18B20...");
-  delay(500);
+// ---------------- SENSOR FUSION ----------------
+void updateFinalTemp() {
+  ds_ok  = dsValid(ds_temp);
+  dht_ok = dhtValid(dht_temp, dht_hum);
+  final_ok = (ds_ok || dht_ok);
 
-  tempSensor.begin();
-  int deviceCount = tempSensor.getDeviceCount();
-  Serial.print("Found ");
-  Serial.print(deviceCount);
-  Serial.println(" DS18B20(s)");
+  if (!final_ok) { final_temp = NAN; return; }
+  if (ds_ok && !dht_ok) { final_temp = ds_temp; return; }
+  if (!ds_ok && dht_ok) { final_temp = dht_temp; return; }
 
-  if (deviceCount == 0) {
-    Serial.println("ERROR: No DS18B20! Check wiring & 4.7k pullup");
-    tempSensorWorking = false;
-    return false;
+  // Weighted average: DS18B20 (σ=0.5°C) weighted more than DHT11 (σ=2°C)
+  const float wDS  = 1.0f / (0.5f * 0.5f);
+  const float wDHT = 1.0f / (2.0f * 2.0f);
+  final_temp = (wDS * ds_temp + wDHT * dht_temp) / (wDS + wDHT);
+}
+
+// ---------------- HEAT INDEX ----------------
+void updateHeatIndex() {
+  hi_ok = false;
+  heat_index_c = NAN;
+  if (!dht_ok) return;
+  heat_index_c = dht.computeHeatIndex(dht_temp, dht_hum, false);
+  if (!isnan(heat_index_c)) hi_ok = true;
+}
+
+const char* computeTempState(float t) {
+  if (isnan(t))             return "NO TEMP";
+  if (t <= TEMP_NORMAL_MAX) return "NORMAL";
+  if (t <= TEMP_RISING_MAX) return "RISING";
+  return "OVERHEAT";
+}
+
+// ---------------- BUZZER ----------------
+void buzzerWrite(bool on) {
+  buzzerOn = on;
+  digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+}
+
+void updateBuzzer(uint32_t nowMs) {
+  if (!bootBeepDone) {
+    bootBeepDone = true;
+    buzzerPhaseStart = nowMs;
+    buzzerWrite(true);
+    return;
   }
 
-  tempSensor.setResolution(12);
+  if (bootBeepDone && buzzerOn && !overheatActive) {
+    if (nowMs - buzzerPhaseStart >= BUZZ_BOOT_ON_MS) buzzerWrite(false);
+  }
 
-  for (int attempt = 0; attempt < 3; attempt++) {
-    delay(100);
-    tempSensor.requestTemperatures();
-    delay(750);
+  if (!overheatActive) return;
 
-    float t = tempSensor.getTempCByIndex(0);
-    Serial.print("Attempt ");
-    Serial.print(attempt + 1);
-    Serial.print(": ");
-    Serial.print(t);
-    Serial.println(" C");
+  uint32_t elapsed = nowMs - buzzerPhaseStart;
+  if (buzzerOn) {
+    if (elapsed >= BUZZ_OVER_ON_MS) { buzzerWrite(false); buzzerPhaseStart = nowMs; }
+  } else {
+    if (elapsed >= BUZZ_OVER_OFF_MS) { buzzerWrite(true); buzzerPhaseStart = nowMs; }
+  }
+}
 
-    if (t != DEVICE_DISCONNECTED_C && t > TEMP_ERROR && t < 85.0f) {
-      tempSensorWorking = true;
-      currentTemperature = t;
-      Serial.println("Temperature sensor OK!");
-      return true;
+// ---------------- BATTERY ----------------
+int voltageToPercent(float v) {
+  return clampi((int)(((v - VBAT_EMPTY) * 100.0f / (VBAT_FULL - VBAT_EMPTY)) + 0.5f), 0, 100);
+}
+
+uint32_t readAdcMvAvg(uint8_t pin, int samples = 25) {
+  uint32_t sum = 0;
+  for (int i = 0; i < samples; i++) sum += analogReadMilliVolts(pin);
+  return sum / samples;
+}
+
+void updateBattery() {
+  float vbat = (readAdcMvAvg(BAT_PIN, 25) / 1000.0f) * DIVIDER_RATIO;
+  if (isnan(vbat_ema)) vbat_ema = vbat;
+  vbat_ema = 0.92f * vbat_ema + 0.08f * vbat;
+  bat_pct = voltageToPercent(vbat_ema);
+}
+
+// ---------------- BACKEND GET PWM ----------------
+void fetchPWMStatus() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, PWM_STATUS_URL);
+
+  int code = http.GET();
+  if (code == 200) {
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, http.getString());
+    if (!err) {
+      if (doc.containsKey("autoMode"))  autoMode   = doc["autoMode"].as<bool>();
+      if (doc.containsKey("manualPWM")) backendPWM = constrain(doc["manualPWM"].as<int>(), PWM_MIN, PWM_MAX);
+
+      // ✅ Apply manual PWM only when relay is ON and not auto
+      if (!autoMode && relayState) {
+        currentPWM = backendPWM;
+        ledcWrite(LEDC_CHANNEL, currentPWM);
+
+        // ✅ Update RPM proportionally to new PWM
+        currentRPM = pwmToRPM(currentPWM);
+
+        Serial.printf("[MANUAL] PWM=%d | RPM=%lu\n", currentPWM, currentRPM);
+      }
     }
   }
-
-  Serial.println("ERROR: Temp sensor timeout!");
-  tempSensorWorking = false;
-  return false;
+  http.end();
 }
 
-bool initFanPWM() {
-  ledcSetup(LEDC_CHANNEL, FAN_PWM_FREQ, FAN_PWM_BITS);
-  ledcAttachPin(PWM_FAN_PIN, LEDC_CHANNEL);
-  ledcWrite(LEDC_CHANNEL, currentPWM);
-  fanControlWorking = true;
-  Serial.println("Fan PWM initialized");
-  return true;
-}
+// ---------------- BACKEND GET RELAY ----------------
+void fetchRelayStatus() {
+  if (WiFi.status() != WL_CONNECTED) return;
 
-bool initWiFiAndBlynk() {
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(wifi_ssid);
-  WiFi.begin(wifi_ssid, wifi_password);
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
-    delay(250);
-  }
-  wifiConnected = (WiFi.status() == WL_CONNECTED);
-  if (wifiConnected) {
-    Serial.print("WiFi connected, IP: ");
-    Serial.println(WiFi.localIP());
-    Blynk.config(BLYNK_AUTH_TOKEN);
-    if (!Blynk.connect(3000)) {
-      Serial.println("Blynk timeout (will retry)");
-    } else {
-      Serial.println("Blynk connected");
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, RELAY_STATUS_URL);
+
+  int code = http.GET();
+  if (code == 200) {
+    StaticJsonDocument<200> doc;
+    DeserializationError err = deserializeJson(doc, http.getString());
+    if (!err && doc.containsKey("relayState")) {
+      relayState = doc["relayState"].as<bool>();
+      digitalWrite(RELAY_PIN, relayState ? LOW : HIGH);   // Active LOW relay
+
+      // ✅ Relay OFF → immediately stop fan and zero RPM
+      if (!relayState) {
+        currentPWM = 0;
+        currentRPM = 0;
+        ledcWrite(LEDC_CHANNEL, 0);
+      }
+
+      Serial.print("Relay -> ");
+      Serial.println(relayState ? "ON" : "OFF");
     }
-    return true;
   }
-  Serial.println("WiFi failed");
-  return false;
+  http.end();
 }
 
-// ---------------------- Blynk handlers ----------------------
-BLYNK_WRITE(V2) {
-  if (!autoMode) {
-    int newPWM = param.asInt();
-    newPWM = constrain(newPWM, PWM_MIN, PWM_MAX);
-    currentPWM = newPWM;
-    if (fanControlWorking) ledcWrite(LEDC_CHANNEL, currentPWM);
-    Serial.printf("Manual PWM -> %d\n", currentPWM);
-  }
+// ---------------- BACKEND POST ----------------
+void postSensorData() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, SENSOR_POST_URL);
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<512> doc;
+  doc["temperature"]    = final_ok ? r2(final_temp) : 0;
+  doc["rpm"]            = currentRPM;
+  doc["pwm"]            = currentPWM;
+  doc["deviceName"]     = deviceName;
+  doc["devicePass_Key"] = devicePass_Key;
+  doc["relayState"]     = relayState;
+  doc["batteryPercent"] = bat_pct;
+
+  if (dht_ok) doc["humidity"]  = r2(dht_hum);
+  if (hi_ok)  doc["heatindex"] = r2(heat_index_c);
+  if (ds_ok)  doc["dsTemp"]    = r2(ds_temp);
+  if (dht_ok) doc["dhtTemp"]   = r2(dht_temp);
+
+  String payload;
+  serializeJson(doc, payload);
+  Serial.println("POST: " + payload);
+  Serial.printf("Code: %d\n", http.POST(payload));
+  http.end();
 }
 
-BLYNK_WRITE(V4) {
-  autoMode = (param.asInt() == 1);
-  Serial.println(autoMode ? "AUTO mode" : "MANUAL mode");
+// ---------------- TICKER ----------------
+void updateTickerText() {
+  tickerText  = autoMode ? "AUTO " : "MAN ";
+  tickerText += tempState;
+  tickerText += " RLY:";
+  tickerText += relayState ? "ON" : "OFF";
 }
 
-// ---------------------- Display ----------------------
-void updateOLED() {
-  if (!oledWorking) return;
+// ---------------- OLED ----------------
+void oledRender() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
+
+  display.setFont(&FreeSans12pt7b);
+  display.setCursor(0, 18);
+  if (final_ok) {
+    display.print(final_temp, 1);
+    display.print("C");
+  } else {
+    display.print("NO TEMP");
+  }
+
+  display.setFont();
   display.setTextSize(1);
 
-  // Temperature
-  display.setCursor(0,0);
-  display.print("Temp: ");
-  if (tempSensorWorking && currentTemperature > TEMP_ERROR) {
-    display.print(currentTemperature, 1);
-    display.print(" C");
-  } else {
-    display.print("ERR");
-  }
+  display.setCursor(0, 24);
+  display.print("DS:");
+  ds_ok ? (display.print(ds_temp, 1), display.print("C ")) : display.print("ERR ");
+  display.print("D:");
+  dht_ok ? (display.print(dht_temp, 1), display.print("C")) : display.print("ERR");
 
-  // PWM
-  display.setCursor(0,12);
-  display.print("PWM: ");
+  display.setCursor(0, 34);
+  display.print("H:");
+  dht_ok ? (display.print((int)dht_hum), display.print("% ")) : display.print("ERR ");
+  display.print("HI:");
+  hi_ok ? (display.print(heat_index_c, 1), display.print("C")) : display.print("ERR");
+
+  display.setCursor(0, 44);
+  display.print("B:");
+  display.print(bat_pct);
+  display.print("% ");
+  display.print("R:");
+  display.print(currentRPM);
+  display.print(" P:");
   display.print(currentPWM);
-  display.print(" (");
-  display.print((currentPWM * 100) / 255);
-  display.print("%)");
 
-  // RPM
-  display.setCursor(0,24);
-  display.print("RPM: ");
-  if (tachConnected && currentRPM > 0) {
-    display.print(currentRPM);
-  } else {
-    display.print("----");
-  }
+  display.setCursor(0, 54);
+  display.print(autoMode ? "AUTO " : "MAN  ");
+  display.print(tempState);
+  display.print(" R:");
+  display.print(relayState ? "ON " : "OFF");
 
-  // Mode
-  display.setCursor(0,36);
-  display.print("Mode: ");
-  display.print(autoMode ? "Auto" : "Manual");
-
-  // WiFi
-  display.setCursor(0,48);
-  display.print("WiFi: ");
-  display.print(wifiConnected ? "OK" : "OFF");
-
-  // Status
-  display.setCursor(0,56);
-  if (!tachConnected) {
-    display.print("TACH: No signal");
-  } else if (!tempSensorWorking) {
-    display.print("TEMP: Check wire");
-  } else {
-    display.print("All OK");
-  }
+  updateTickerText();
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(tickerText, 0, tickerY, &x1, &y1, &w, &h);
+  tickerX -= 2;
+  if (tickerX < -((int)w)) tickerX = SCREEN_WIDTH;
+  display.setCursor(tickerX, tickerY);
+  display.print(tickerText);
 
   display.display();
 }
 
-// ---------------------- Setup ----------------------
+// ---------------- SETUP ----------------
 void setup() {
   Serial.begin(115200);
-  delay(500);
-  Serial.println("\n=== ESP32 Fan Controller v1.8 ===");
 
-  oledWorking       = initOLED();
-  tempSensorWorking = initTemp();
-  fanControlWorking = initFanPWM();
+  pinMode(BUZZER_PIN, OUTPUT);
+  buzzerWrite(false);
 
-  if (oledWorking) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0,0);
-    display.println("ESP32 Fan v1.8");
-    display.println("");
-    display.print("OLED: "); display.println(oledWorking ? "OK" : "FAIL");
-    display.print("Temp: "); display.println(tempSensorWorking ? "OK" : "FAIL");
-    display.print("Fan:  "); display.println(fanControlWorking ? "OK" : "FAIL");
-    display.print("WiFi: Connecting...");
-    display.display();
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, HIGH);   // Active LOW → OFF at boot
+  Serial.println("Relay initialized OFF");
+
+  Wire.begin(OLED_SDA, OLED_SCL);
+  Wire.setClock(100000);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    for (;;) delay(1000);
   }
+
+  ledcSetup(LEDC_CHANNEL, FAN_PWM_FREQ, FAN_PWM_BITS);
+  ledcAttachPin(PWM_FAN_PIN, LEDC_CHANNEL);
+  currentPWM = PWM_MIN;
+  ledcWrite(LEDC_CHANNEL, currentPWM);
+
+  ds18b20.begin();
+  ds18b20.setResolution(10);
+  ds18b20.setWaitForConversion(false);
+  ds_conv_ms = ds18b20.millisToWaitForConversion(ds18b20.getResolution());
+  ds18b20.requestTemperatures();
+  ds_req_time = millis();
+  ds_waiting = true;
+
+  dht.begin();
+
+  pinMode(BAT_PIN, INPUT);
+  analogReadResolution(12);
 
   pinMode(TACH_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(TACH_PIN), tachISR, FALLING);
-  Serial.println("Tach interrupt on GPIO 5");
 
-  wifiConnected = initWiFiAndBlynk();
-
-  if (oledWorking) {
-    display.setCursor(0,56);
-    display.print("WiFi: ");
-    display.println(wifiConnected ? "OK" : "FAIL");
-    display.display();
+  WiFi.begin(wifi_ssid, wifi_password);
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+    delay(500);
+    attempts++;
   }
+  Serial.println(WiFi.status() == WL_CONNECTED ? "WiFi OK" : "WiFi FAIL");
 
-  lastRpmCalc     = millis();
-  lastTempRead    = millis();
-  lastBlynkUpdate = millis();
-  lastOLEDUpdate  = millis();
+  uint32_t now = millis();
+  lastRpmCalc    = now;
+  lastPWMFetch   = now;
+  lastRelayFetch = now;
+  lastTempApply  = now;
+  lastDHTRead    = now;
+  lastSensorPost = now;
+  lastOLEDUpdate = now;
+  lastBatRead    = now;
 
-  Serial.println("Setup complete!");
+  bootBeepDone   = false;
+  overheatActive = false;
+  tickerX        = SCREEN_WIDTH;
+
+  // Initial RPM based on starting PWM
+  currentRPM = pwmToRPM(currentPWM);
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("BOOT OK v3.5");
+  display.display();
 }
 
-// ---------------------- Loop ----------------------
+// ---------------- LOOP ----------------
 void loop() {
-  if (wifiConnected) {
-    Blynk.run();
-  } else {
-    static unsigned long lastTry = 0;
-    if (millis() - lastTry > 10000) {
-      lastTry = millis();
-      if (WiFi.status() != WL_CONNECTED) {
-        WiFi.begin(wifi_ssid, wifi_password);
-      } else {
-        Blynk.connect(3000);
-      }
-    }
+  uint32_t now = millis();
+
+  updateBuzzer(now);
+
+  // ---------------- FETCH PWM ----------------
+  if (now - lastPWMFetch >= 3000) {
+    fetchPWMStatus();
+    lastPWMFetch = now;
   }
 
-  unsigned long now = millis();
-
-  // Temperature (every 2s)
-  if (now - lastTempRead >= 2000) {
-    if (tempSensorWorking) {
-      tempSensor.requestTemperatures();
-      delay(100);
-      float t = tempSensor.getTempCByIndex(0);
-      if (t != DEVICE_DISCONNECTED_C && t > TEMP_ERROR && t < 85.0f) {
-        currentTemperature = t;
-        if (autoMode) {
-          int newPWM = tempToPWM(currentTemperature);
-          if (newPWM != currentPWM) {
-            currentPWM = newPWM;
-            if (fanControlWorking) ledcWrite(LEDC_CHANNEL, currentPWM);
-          }
-        }
-      } else {
-        Serial.println("Warning: invalid temp");
-        tempSensorWorking = initTemp();
-      }
-    }
-    lastTempRead = now;
+  // ---------------- FETCH RELAY ----------------
+  if (now - lastRelayFetch >= 3000) {
+    fetchRelayStatus();
+    lastRelayFetch = now;
   }
 
-  // RPM (every 1s) - CORRECTED CALCULATION
+  // ---------------- BATTERY ----------------
+  if (now - lastBatRead >= BAT_INTERVAL_MS) {
+    updateBattery();
+    lastBatRead = now;
+  }
+
+  // ---------------- DS18B20 ----------------
+  if (ds_waiting && (now - ds_req_time >= ds_conv_ms)) {
+    ds_temp = ds18b20.getTempCByIndex(0);
+    ds18b20.requestTemperatures();
+    ds_req_time = now;
+    ds_waiting  = true;
+    updateFinalTemp();
+  }
+
+  // ---------------- DHT ----------------
+  if (now - lastDHTRead >= 2000) {
+    lastDHTRead = now;
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+    if (!isnan(h) && !isnan(t)) { dht_hum = h; dht_temp = t; }
+    updateFinalTemp();
+    updateHeatIndex();
+  }
+
+  // ---------------- TEMP APPLY ----------------
+  if (now - lastTempApply >= 2000) {
+    lastTempApply = now;
+
+    tempState      = final_ok ? computeTempState(final_temp) : "NO TEMP";
+    overheatActive = (final_ok && final_temp > TEMP_RISING_MAX);
+
+    if (overheatActive && !buzzerOn) { buzzerWrite(true); buzzerPhaseStart = now; }
+    if (!overheatActive && buzzerOn && bootBeepDone) buzzerWrite(false);
+
+    if (!relayState) {
+      // ✅ Relay OFF → fan and RPM both zero
+      currentPWM = 0;
+      currentRPM = 0;
+      ledcWrite(LEDC_CHANNEL, 0);
+    }
+    else if (autoMode && final_ok) {
+      // ✅ Auto mode → temp-based PWM and proportional RPM
+      currentPWM = tempToPWM(final_temp);
+      ledcWrite(LEDC_CHANNEL, currentPWM);
+      currentRPM = pwmToRPM(currentPWM);
+      Serial.printf("[AUTO] Temp=%.1fC PWM=%d RPM=%lu State=%s\n",
+                    final_temp, currentPWM, currentRPM, tempState);
+    }
+    // Manual mode: PWM and RPM already updated in fetchPWMStatus()
+  }
+
+  // ---------------- RPM DEBUG (Tach pulses - serial only) ----------------
   if (now - lastRpmCalc >= RPM_SAMPLE_MS) {
     noInterrupts();
     unsigned long pulses = tachPulseCount;
     tachPulseCount = 0;
     interrupts();
 
-    // correct: 2 pulses per rev (change if your fan is different)
-    if (PULSES_PER_REV > 0) {
-      currentRPM = (pulses * 60UL) / PULSES_PER_REV;
-    } else {
-      currentRPM = 0;
-    }
-
-    Serial.printf("Pulses:%lu | RPM:%lu | PWM:%d | Temp:%.1f\n",
-                  pulses, currentRPM, currentPWM, currentTemperature);
+    // Print raw tach data for reference only
+    Serial.printf("Relay: %d | PWM: %d | Pulses(raw): %lu | RPM(proportional): %lu\n",
+                  relayState, currentPWM, pulses, currentRPM);
 
     lastRpmCalc = now;
   }
 
-  // OLED (every 300ms)
+  // ---------------- BACKEND POST ----------------
+  if (now - lastSensorPost >= 5000) {
+    postSensorData();
+    lastSensorPost = now;
+  }
+
+  // ---------------- OLED ----------------
   if (now - lastOLEDUpdate >= 300) {
-    updateOLED();
+    oledRender();
     lastOLEDUpdate = now;
   }
-
-  // Blynk (every 3s)
-  if (wifiConnected && Blynk.connected() && (now - lastBlynkUpdate >= 3000)) {
-    Blynk.virtualWrite(VPIN_TEMP,        currentTemperature);
-    Blynk.virtualWrite(VPIN_RPM,         currentRPM);
-    Blynk.virtualWrite(VPIN_PWM_DISPLAY, currentPWM);
-    Blynk.virtualWrite(VPIN_FAN_STATUS,  String(currentRPM) + " RPM");
-    Blynk.virtualWrite(VPIN_AUTO_MODE,   autoMode ? 1 : 0);
-    lastBlynkUpdate = now;
-  }
-
-  delay(10);
 }
