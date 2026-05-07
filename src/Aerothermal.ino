@@ -20,12 +20,12 @@
 #include <DHT.h>
 
 // ---------------- WIFI ----------------
-const char* wifi_ssid     = "Airtel_Krish1911";
-const char* wifi_password = "Jesse@996";
+const char* wifi_ssid     = "xxxxx";
+const char* wifi_password = "xxxxx";
 
 // ---------------- DEVICE ----------------
 const char* deviceName     = "Esp32_Aerothermal";
-const char* devicePass_Key = "Manav_123";
+const char* devicePass_Key = "xxxxx";
 
 // ---------------- BACKEND ----------------
 const char* SENSOR_POST_URL  = "https://aerothermal-fanbackend.vercel.app/api/dashboard/sensor";
