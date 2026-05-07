@@ -1,0 +1,16 @@
+# Secret credentials — never commit
+src/secrets.h
+
+# Build artifacts
+*.bin
+*.elf
+build/
+.pio/
+
+# Arduino IDE temp files
+*.bak
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
