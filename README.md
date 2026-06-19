@@ -311,7 +311,7 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 ## 👨‍💻 Author
 
 **Krish Oza**  
-📧 [GitHub](https://github.com/krish9427) | 💼 [LinkedIn](https://linkedin.com/in/krish-oza)
+📧 [GitHub](https://github.com/krish9427) | 💼 [LinkedIn](https://www.linkedin.com/in/krishprajapati094/)
 
 *Electronics & Communication Engineering Student*  
 *Specialization: Embedded Systems | ESP32 | IoT*
